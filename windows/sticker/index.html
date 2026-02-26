@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>Orbit Sticker</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="sticker" id="sticker">
+    <!-- Drag handle -->
+    <div class="sticker-header" id="drag-handle">
+      <span class="sticker-title">Orbit</span>
+      <div class="sticker-controls">
+        <button class="ctrl-btn pin-active" id="btn-pin" title="항상 위에 고정">&#128204;</button>
+        <button class="ctrl-btn" id="btn-collapse" title="접기/펼치기">&#9866;</button>
+        <button class="ctrl-btn" id="btn-open-main" title="메인 창 열기">&#9634;</button>
+      </div>
+    </div>
+
+    <!-- Task list -->
+    <div class="sticker-body" id="sticker-body">
+      <div class="sticker-list" id="task-list"></div>
+      <div class="sticker-footer" id="sticker-footer"></div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

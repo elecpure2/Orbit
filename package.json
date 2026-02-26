@@ -1,0 +1,46 @@
+{
+  "name": "orbit",
+  "version": "1.0.0",
+  "description": "AI-powered desktop todo & project planner with sticky note",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --win",
+    "build:dir": "electron-builder --win --dir"
+  },
+  "author": "",
+  "license": "MIT",
+  "build": {
+    "appId": "com.orbit.todo",
+    "productName": "Orbit",
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": ["ko"],
+      "language": "1042"
+    },
+    "files": [
+      "main.js",
+      "server.js",
+      "db.js",
+      "preload.js",
+      "windows/**/*",
+      "node_modules/**/*"
+    ],
+    "extraResources": []
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "cors": "^2.8.6",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
+    "electron": "^40.6.1",
+    "electron-builder": "^26.8.1"
+  }
+}

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Orbit</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <h1 class="app-title">Orbit</h1>
+        <button class="btn-icon" id="btn-add-project" title="프로젝트 추가">+</button>
+      </div>
+      <div class="sidebar-section">
+        <button class="sidebar-item active" data-view="today">
+          <span class="sidebar-icon">&#9788;</span> 오늘
+        </button>
+        <button class="sidebar-item" data-view="all">
+          <span class="sidebar-icon">&#9776;</span> 전체
+        </button>
+        <button class="sidebar-item" data-view="calendar">
+          <span class="sidebar-icon">&#9635;</span> 캘린더
+        </button>
+      </div>
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-section">
+        <span class="sidebar-label">프로젝트</span>
+        <div id="project-list"></div>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="content">
+      <header class="content-header">
+        <h2 id="view-title">오늘 할 일</h2>
+        <div class="header-actions">
+          <input type="date" id="date-picker" class="date-picker" />
+        </div>
+      </header>
+
+      <div class="in-progress-section hidden" id="in-progress-section"></div>
+      <div class="task-list" id="task-list"></div>
+      <div class="calendar-view hidden" id="calendar-view"></div>
+
+      <!-- Add task bar -->
+      <div class="add-task-bar">
+        <input type="text" id="new-task-title" placeholder="새 작업 추가..." class="task-input" />
+        <select id="new-task-priority" class="priority-select">
+          <option value="normal">보통</option>
+          <option value="must">필수</option>
+          <option value="low">낮음</option>
+        </select>
+        <input type="number" id="new-task-estimate" placeholder="분" class="estimate-input" min="0" />
+        <button class="btn-add-task" id="btn-add-task">추가</button>
+      </div>
+
+      <!-- Status bar -->
+      <footer class="status-bar">
+        <span id="status-info">작업 0개</span>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Project add modal -->
+  <div class="modal-overlay hidden" id="project-modal">
+    <div class="modal">
+      <h3>프로젝트 추가</h3>
+      <input type="text" id="project-name" placeholder="프로젝트 이름" class="modal-input" />
+      <input type="text" id="project-path" placeholder="폴더 경로 (선택)" class="modal-input" />
+      <input type="text" id="project-tech" placeholder="기술 스택 (선택)" class="modal-input" />
+      <div class="modal-actions">
+        <button class="btn-cancel" id="btn-cancel-project">취소</button>
+        <button class="btn-confirm" id="btn-confirm-project">추가</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
