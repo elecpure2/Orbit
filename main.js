@@ -67,10 +67,10 @@ function createStickerWindow() {
 function createTray() {
   const icon = nativeImage.createEmpty();
   tray = new Tray(icon);
-  tray.setToolTip('Orbit');
+  tray.setToolTip('FUARA');
 
   const contextMenu = Menu.buildFromTemplate([
-    { label: 'Orbit 열기', click: () => mainWindow && mainWindow.show() },
+    { label: 'FUARA 열기', click: () => mainWindow && mainWindow.show() },
     { label: '스티커 표시/숨기기', click: () => toggleSticker() },
     { type: 'separator' },
     { label: '종료', click: () => quitApp() },
@@ -104,6 +104,7 @@ function notifyStickerRefresh() {
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('tasks-changed');
+    mainWindow.webContents.send('notes-changed');
   }
 }
 
@@ -113,6 +114,23 @@ function registerIPC() {
   ipcMain.handle('get-projects', () => db.getAllProjects());
   ipcMain.handle('create-project', (_e, data) => db.createProject(data));
   ipcMain.handle('delete-project', (_e, id) => db.deleteProject(id));
+
+  ipcMain.handle('get-notes', () => db.getAllNotes());
+  ipcMain.handle('create-note', (_e, data) => {
+    const note = db.createNote(data);
+    notifyStickerRefresh();
+    return note;
+  });
+  ipcMain.handle('update-note', (_e, id, fields) => {
+    const note = db.updateNote(id, fields);
+    notifyStickerRefresh();
+    return note;
+  });
+  ipcMain.handle('delete-note', (_e, id) => {
+    db.deleteNote(id);
+    notifyStickerRefresh();
+    return { ok: true };
+  });
 
   ipcMain.handle('get-tasks-today', () => db.getTodayTasks());
   ipcMain.handle('get-tasks-by-date', (_e, date) => db.getTasksByDate(date));

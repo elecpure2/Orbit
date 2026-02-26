@@ -35,6 +35,38 @@ function createServer(onTaskChange) {
     res.json({ ok: true });
   });
 
+  // ── Notes ──
+
+  app.get('/notes', (_req, res) => {
+    res.json(db.getAllNotes());
+  });
+
+  app.post('/notes', (req, res) => {
+    const { title } = req.body;
+    if (!title) return res.status(400).json({ error: 'title is required' });
+
+    try {
+      const note = db.createNote(req.body);
+      if (onTaskChange) onTaskChange();
+      res.status(201).json(note);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.patch('/notes/:id', (req, res) => {
+    const note = db.updateNote(Number(req.params.id), req.body);
+    if (!note) return res.status(404).json({ error: 'Note not found or no changes' });
+    if (onTaskChange) onTaskChange();
+    res.json(note);
+  });
+
+  app.delete('/notes/:id', (req, res) => {
+    db.deleteNote(Number(req.params.id));
+    if (onTaskChange) onTaskChange();
+    res.json({ ok: true });
+  });
+
   // ── Tasks ──
 
   app.get('/tasks/today', (_req, res) => {
@@ -78,7 +110,7 @@ function createServer(onTaskChange) {
   // ── Health ──
 
   app.get('/ping', (_req, res) => {
-    res.json({ status: 'ok', app: 'orbit' });
+    res.json({ status: 'ok', app: 'fuara' });
   });
 
   return app;
@@ -88,7 +120,7 @@ function startServer(onTaskChange) {
   const app = createServer(onTaskChange);
   return new Promise((resolve, reject) => {
     const server = app.listen(PORT, '127.0.0.1', () => {
-      console.log(`[Orbit] API server running at http://127.0.0.1:${PORT}`);
+      console.log(`[FUARA] API server running at http://127.0.0.1:${PORT}`);
       resolve(server);
     });
     server.on('error', reject);

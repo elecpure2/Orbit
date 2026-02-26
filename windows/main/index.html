@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Orbit</title>
+  <title>FUARA</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,7 +11,7 @@
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
-        <h1 class="app-title">Orbit</h1>
+        <h1 class="app-title">FUARA</h1>
         <button class="btn-icon" id="btn-add-project" title="프로젝트 추가">+</button>
       </div>
       <div class="sidebar-section">
@@ -24,6 +24,9 @@
         <button class="sidebar-item" data-view="calendar">
           <span class="sidebar-icon">&#9635;</span> 캘린더
         </button>
+        <button class="sidebar-item" data-view="notes">
+          <span class="sidebar-icon">&#9998;</span> 노트
+        </button>
       </div>
       <div class="sidebar-divider"></div>
       <div class="sidebar-section">
@@ -35,7 +38,11 @@
     <!-- Main content -->
     <main class="content">
       <header class="content-header">
-        <h2 id="view-title">오늘 할 일</h2>
+        <div class="header-title-row">
+          <button class="header-date-btn" id="btn-date-prev" title="이전 날짜/월">&#9664;</button>
+          <h2 id="view-title">오늘 할 일</h2>
+          <button class="header-date-btn" id="btn-date-next" title="다음 날짜/월">&#9654;</button>
+        </div>
         <div class="header-actions">
           <input type="date" id="date-picker" class="date-picker" />
         </div>
@@ -44,6 +51,7 @@
       <div class="in-progress-section hidden" id="in-progress-section"></div>
       <div class="task-list" id="task-list"></div>
       <div class="calendar-view hidden" id="calendar-view"></div>
+      <div class="notes-view hidden" id="notes-view"></div>
 
       <!-- Add task bar -->
       <div class="add-task-bar">

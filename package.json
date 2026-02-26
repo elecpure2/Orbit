@@ -1,5 +1,5 @@
 {
-  "name": "orbit",
+  "name": "fuara",
   "version": "1.0.0",
   "description": "AI-powered desktop todo & project planner with sticky note",
   "main": "main.js",
@@ -12,8 +12,8 @@
   "author": "",
   "license": "MIT",
   "build": {
-    "appId": "com.orbit.todo",
-    "productName": "Orbit",
+    "appId": "com.fuara.todo",
+    "productName": "FUARA",
     "win": {
       "target": "nsis"
     },

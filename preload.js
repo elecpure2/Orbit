@@ -6,6 +6,12 @@ contextBridge.exposeInMainWorld('orbit', {
   createProject: (data) => ipcRenderer.invoke('create-project', data),
   deleteProject: (id) => ipcRenderer.invoke('delete-project', id),
 
+  // Notes
+  getNotes: () => ipcRenderer.invoke('get-notes'),
+  createNote: (data) => ipcRenderer.invoke('create-note', data),
+  updateNote: (id, fields) => ipcRenderer.invoke('update-note', id, fields),
+  deleteNote: (id) => ipcRenderer.invoke('delete-note', id),
+
   // Tasks
   getTodayTasks: () => ipcRenderer.invoke('get-tasks-today'),
   getTasksByDate: (date) => ipcRenderer.invoke('get-tasks-by-date', date),
@@ -24,6 +30,10 @@ contextBridge.exposeInMainWorld('orbit', {
   onFocusNewTask: (callback) => {
     ipcRenderer.on('focus-new-task', callback);
     return () => ipcRenderer.removeListener('focus-new-task', callback);
+  },
+  onNotesChanged: (callback) => {
+    ipcRenderer.on('notes-changed', callback);
+    return () => ipcRenderer.removeListener('notes-changed', callback);
   },
 
   // Window controls

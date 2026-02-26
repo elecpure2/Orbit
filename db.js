@@ -1,16 +1,151 @@
 const Database = require('better-sqlite3');
+const fs = require('fs');
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, 'orbit.db');
+const DB_PATH = path.join(__dirname, 'fuara.db');
+const LEGACY_DB_PATH = path.join(__dirname, 'orbit.db');
 
 let db;
 
+function safeMoveFile(src, dst) {
+  if (!fs.existsSync(src)) return;
+  if (fs.existsSync(dst)) return;
+  fs.renameSync(src, dst);
+}
+
+function migrateDbFileIfNeeded() {
+  if (fs.existsSync(DB_PATH)) return;
+  if (!fs.existsSync(LEGACY_DB_PATH)) return;
+
+  try {
+    safeMoveFile(LEGACY_DB_PATH, DB_PATH);
+    safeMoveFile(`${LEGACY_DB_PATH}-wal`, `${DB_PATH}-wal`);
+    safeMoveFile(`${LEGACY_DB_PATH}-shm`, `${DB_PATH}-shm`);
+    safeMoveFile(`${LEGACY_DB_PATH}-journal`, `${DB_PATH}-journal`);
+    console.log('[FUARA][DB] Migrated orbit.db -> fuara.db');
+  } catch (e) {
+    // Keep app usable even if rename fails in some environments
+    console.warn(`[FUARA][DB] Migration skipped: ${e.message}`);
+  }
+}
+
+function pickNewerDbPath() {
+  const newMtime = fs.statSync(DB_PATH).mtimeMs;
+  const legacyMtime = fs.statSync(LEGACY_DB_PATH).mtimeMs;
+  return legacyMtime > newMtime ? LEGACY_DB_PATH : DB_PATH;
+}
+
+function readParentTaskCount(dbPath) {
+  if (!fs.existsSync(dbPath)) return -1;
+
+  let tempDb = null;
+  try {
+    tempDb = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const hasTasks = tempDb.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks' LIMIT 1"
+    ).get();
+    if (!hasTasks) return 0;
+
+    const row = tempDb.prepare(
+      "SELECT COUNT(*) AS c FROM tasks WHERE parent_id IS NULL"
+    ).get();
+    return Number(row?.c || 0);
+  } catch (_e) {
+    return -1;
+  } finally {
+    if (tempDb) tempDb.close();
+  }
+}
+
+function pickDataRichDbPath() {
+  const newCount = readParentTaskCount(DB_PATH);
+  const legacyCount = readParentTaskCount(LEGACY_DB_PATH);
+  if (newCount === legacyCount) return null;
+  return legacyCount > newCount ? LEGACY_DB_PATH : DB_PATH;
+}
+
+function resolveDbPath() {
+  migrateDbFileIfNeeded();
+
+  const hasNew = fs.existsSync(DB_PATH);
+  const hasLegacy = fs.existsSync(LEGACY_DB_PATH);
+
+  if (hasNew && hasLegacy) {
+    const dataRich = pickDataRichDbPath();
+    if (dataRich) {
+      const chosenName = path.basename(dataRich);
+      const newCount = readParentTaskCount(DB_PATH);
+      const legacyCount = readParentTaskCount(LEGACY_DB_PATH);
+      console.warn(
+        `[FUARA][DB] Both DB files exist. Using task-rich file: ${chosenName} (fuara=${newCount}, orbit=${legacyCount})`
+      );
+      return dataRich;
+    }
+
+    const chosen = pickNewerDbPath();
+    const chosenName = path.basename(chosen);
+    console.warn(`[FUARA][DB] Both DB files exist. Using newer file: ${chosenName}`);
+    return chosen;
+  }
+
+  if (hasNew) return DB_PATH;
+  if (hasLegacy) return LEGACY_DB_PATH;
+  return DB_PATH;
+}
+
+function mergeNotesFromOtherDb(activeDbPath) {
+  const otherDbPath = activeDbPath === DB_PATH ? LEGACY_DB_PATH : DB_PATH;
+  if (!fs.existsSync(otherDbPath)) return;
+
+  let sourceDb = null;
+  try {
+    const current = db.prepare("SELECT COUNT(*) AS c FROM notes").get();
+    if (Number(current?.c || 0) > 0) return;
+
+    sourceDb = new Database(otherDbPath, { readonly: true, fileMustExist: true });
+    const hasNotes = sourceDb.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='notes' LIMIT 1"
+    ).get();
+    if (!hasNotes) return;
+
+    const rows = sourceDb.prepare(
+      "SELECT title, content, category, pinned, created_at, updated_at FROM notes ORDER BY id ASC"
+    ).all();
+    if (!rows || rows.length === 0) return;
+
+    const insert = db.prepare(`
+      INSERT INTO notes (title, content, category, pinned, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const tx = db.transaction((items) => {
+      for (const n of items) {
+        insert.run(
+          n.title,
+          n.content || null,
+          n.category || 'memo',
+          n.pinned ? 1 : 0,
+          n.created_at || null,
+          n.updated_at || null
+        );
+      }
+    });
+    tx(rows);
+    console.log(`[FUARA][DB] Merged ${rows.length} notes from ${path.basename(otherDbPath)}.`);
+  } catch (e) {
+    console.warn(`[FUARA][DB] Note merge skipped: ${e.message}`);
+  } finally {
+    if (sourceDb) sourceDb.close();
+  }
+}
+
 function getDb() {
   if (!db) {
-    db = new Database(DB_PATH);
+    const resolvedPath = resolveDbPath();
+    db = new Database(resolvedPath);
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     initTables();
+    mergeNotesFromOtherDb(resolvedPath);
   }
   return db;
 }
@@ -53,6 +188,16 @@ function initTables() {
       created_at TEXT DEFAULT (datetime('now','localtime')),
       completed_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      content TEXT,
+      category TEXT DEFAULT 'memo',
+      pinned INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      updated_at TEXT DEFAULT (datetime('now','localtime'))
+    );
   `);
 }
 
@@ -75,6 +220,55 @@ function createProject({ name, folder_path, tech_stack }) {
 
 function deleteProject(id) {
   return getDb().prepare('DELETE FROM projects WHERE id = ?').run(id);
+}
+
+// ── Notes ──
+
+function getAllNotes() {
+  return getDb().prepare(`
+    SELECT *
+    FROM notes
+    ORDER BY pinned DESC, updated_at DESC, created_at DESC
+  `).all();
+}
+
+function createNote({ title, content, category, pinned }) {
+  const info = getDb().prepare(`
+    INSERT INTO notes (title, content, category, pinned)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    title,
+    content || null,
+    category || 'memo',
+    pinned ? 1 : 0
+  );
+
+  return getDb().prepare('SELECT * FROM notes WHERE id = ?').get(info.lastInsertRowid);
+}
+
+function updateNote(id, fields) {
+  const db = getDb();
+  const allowed = ['title', 'content', 'category', 'pinned'];
+  const sets = [];
+  const values = [];
+
+  for (const key of allowed) {
+    if (fields[key] !== undefined) {
+      sets.push(`${key} = ?`);
+      values.push(key === 'pinned' ? (fields[key] ? 1 : 0) : fields[key]);
+    }
+  }
+
+  if (sets.length === 0) return null;
+  sets.push("updated_at = datetime('now','localtime')");
+  values.push(id);
+
+  db.prepare(`UPDATE notes SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  return db.prepare('SELECT * FROM notes WHERE id = ?').get(id);
+}
+
+function deleteNote(id) {
+  return getDb().prepare('DELETE FROM notes WHERE id = ?').run(id);
 }
 
 // ── Tasks ──
@@ -254,6 +448,10 @@ module.exports = {
   getProjectByName,
   createProject,
   deleteProject,
+  getAllNotes,
+  createNote,
+  updateNote,
+  deleteNote,
   getTasksByDate,
   getTodayTasks,
   getTasksByProject,
