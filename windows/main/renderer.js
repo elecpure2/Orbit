@@ -1,9 +1,16 @@
+import { Editor } from '@tiptap/core';
+import StarterKit from '@tiptap/starter-kit';
+import Underline from '@tiptap/extension-underline';
+import Highlight from '@tiptap/extension-highlight';
+import Color from '@tiptap/extension-color';
+import { TextStyle } from '@tiptap/extension-text-style';
+
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
 let currentView = 'today';
 let currentProjectId = null;
-let currentDate = new Date().toISOString().slice(0, 10);
+let currentDate = todayYmd();
 const expandedTasks = new Set();
 
 let calendarYear = new Date().getFullYear();
@@ -12,6 +19,10 @@ let calendarPlannedCacheKey = '';
 let calendarPlannedCacheData = {};
 const NOTE_CATEGORIES = ['idea', 'memo', 'dev'];
 let selectedNoteId = null;
+let tiptapEditor = null;
+let noteOriginal = null; // { title, content, category, pinned }
+let activeProjectFilter = null; // { id, name } or null
+let liveTodayKey = todayYmd();
 
 // ── Init ──
 
@@ -41,11 +52,12 @@ async function loadProjects() {
 
   projects.forEach(p => {
     const btn = document.createElement('button');
-    btn.className = 'sidebar-item project-item';
+    const isFiltered = activeProjectFilter && activeProjectFilter.id === p.id;
+    btn.className = `sidebar-item project-item${isFiltered ? ' active' : ''}`;
     btn.dataset.view = 'project';
     btn.dataset.projectId = p.id;
     btn.innerHTML = `
-      <span><span class="sidebar-icon">&#9671;</span> ${escHtml(p.name)}</span>
+      <span><span class="sidebar-icon">${isFiltered ? '&#9670;' : '&#9671;'}</span> ${escHtml(p.name)}</span>
       <span class="btn-delete-project" data-id="${p.id}" title="삭제">&times;</span>
     `;
     list.appendChild(btn);
@@ -70,6 +82,7 @@ async function loadTasks() {
     headerActions.classList.remove('hidden');
     $('#in-progress-section').classList.add('hidden');
     $('#view-title').textContent = `${calendarYear}년 ${calendarMonth}월`;
+    renderFilterBadge();
     await renderCalendar();
     return;
   }
@@ -82,6 +95,7 @@ async function loadTasks() {
     headerActions.classList.add('hidden');
     $('#in-progress-section').classList.add('hidden');
     $('#view-title').textContent = '아이디어 / 메모';
+    renderFilterBadge();
     await renderNotes();
     return;
   }
@@ -92,12 +106,13 @@ async function loadTasks() {
   addBar.classList.remove('hidden');
   headerActions.classList.remove('hidden');
 
+  const pid = activeProjectFilter ? activeProjectFilter.id : undefined;
   let tasks;
 
   if (currentView === 'today') {
     currentDate = todayYmd();
     syncDatePicker();
-    tasks = await window.orbit.getTodayTasks();
+    tasks = await window.orbit.getTodayTasks(pid);
     $('#view-title').textContent = '오늘 할 일';
   } else if (currentView === 'project' && currentProjectId) {
     tasks = await window.orbit.getTasksByProject(currentProjectId);
@@ -106,10 +121,11 @@ async function loadTasks() {
     $('#view-title').textContent = proj ? proj.name : '프로젝트';
   } else {
     syncDatePicker();
-    tasks = await window.orbit.getTasksByDate(currentDate);
+    tasks = await window.orbit.getTasksByDate(currentDate, pid);
     $('#view-title').textContent = currentDate;
   }
 
+  renderFilterBadge();
   renderTasks(tasks);
   renderInProgress(tasks);
 }
@@ -121,12 +137,22 @@ function renderInProgress(tasks) {
   const running = [];
   for (const t of tasks) {
     if (t.stopwatch_started_at && t.status !== 'done') {
-      running.push({ ...t, _parentTitle: null });
+      running.push({
+        ...t,
+        _parentTitle: null,
+        _isSub: false,
+        _hasSubs: !!(t.subtasks && t.subtasks.length > 0),
+      });
     }
     if (t.subtasks) {
       for (const s of t.subtasks) {
         if (s.stopwatch_started_at && s.status !== 'done') {
-          running.push({ ...s, _parentTitle: t.title });
+          running.push({
+            ...s,
+            _parentTitle: t.title,
+            _isSub: true,
+            _hasSubs: false,
+          });
         }
       }
     }
@@ -141,10 +167,10 @@ function renderInProgress(tasks) {
   section.innerHTML = `
     <div class="ip-header">진행 중</div>
     ${running.map(t => {
-      const elapsed = t.stopwatch_elapsed || 0;
-      const started = t.stopwatch_started_at || '';
-      return `
-      <div class="ip-card" data-id="${t.id}" data-sw-elapsed="${elapsed}" data-sw-started="${started}">
+    const elapsed = t.stopwatch_elapsed || 0;
+    const started = t.stopwatch_started_at || '';
+    return `
+      <div class="ip-card" data-id="${t.id}" data-sw-elapsed="${elapsed}" data-sw-started="${started}" data-has-subs="${t._hasSubs ? '1' : ''}" data-is-sub="${t._isSub ? '1' : ''}">
         <div class="ip-top">
           ${t._parentTitle ? `<span class="ip-parent">${escHtml(t._parentTitle)} ›</span>` : ''}
           <span class="ip-title">${escHtml(t.title)}</span>
@@ -158,7 +184,7 @@ function renderInProgress(tasks) {
           </div>
         </div>
       </div>`;
-    }).join('')}
+  }).join('')}
   `;
 
   section.querySelectorAll('.ip-pause').forEach(btn => {
@@ -176,7 +202,14 @@ function renderInProgress(tasks) {
     btn.addEventListener('click', async () => {
       const id = Number(btn.dataset.id);
       const card = btn.closest('.ip-card');
+      const hasSubs = card?.dataset?.hasSubs === '1';
+      const isSub = card?.dataset?.isSub === '1';
+      if (hasSubs && !isSub) {
+        const ok = await showConfirmDialog('서브태스크가 포함된 작업입니다.\n완료 목록에 추가하시겠습니까?');
+        if (!ok) return;
+      }
       await completeTaskWithStopwatch(id, card);
+      if (!isSub) showUndoToast(id);
     });
   });
 }
@@ -191,7 +224,35 @@ function renderTasks(tasks) {
     return;
   }
 
-  list.innerHTML = activeTasks.map(t => renderTaskCard(t)).join('');
+  if (currentView === 'today') {
+    const todayBucket = [];
+    const overdueBuckets = new Map();
+
+    for (const t of activeTasks) {
+      const overdueDays = getOverdueDays(t.target_date);
+      if (overdueDays <= 0) {
+        todayBucket.push(t);
+      } else {
+        if (!overdueBuckets.has(overdueDays)) overdueBuckets.set(overdueDays, []);
+        overdueBuckets.get(overdueDays).push(t);
+      }
+    }
+
+    let html = '';
+    if (todayBucket.length > 0) {
+      html += todayBucket.map(t => renderTaskCard(t)).join('');
+    }
+
+    const overdueKeys = [...overdueBuckets.keys()].sort((a, b) => a - b);
+    for (const days of overdueKeys) {
+      html += `<div class="task-section-divider">-- ${days}일 전 --</div>`;
+      html += overdueBuckets.get(days).map(t => renderTaskCard(t)).join('');
+    }
+
+    list.innerHTML = html || '<div class="empty-state">할 일이 없습니다</div>';
+  } else {
+    list.innerHTML = activeTasks.map(t => renderTaskCard(t)).join('');
+  }
 
   const allPending = [];
   activeTasks.forEach(t => {
@@ -273,7 +334,8 @@ function renderTaskCard(t) {
 
 async function renderNotes(preferredId) {
   const container = $('#notes-view');
-  const notes = await window.orbit.getNotes();
+  const pid = activeProjectFilter ? activeProjectFilter.id : undefined;
+  const notes = await window.orbit.getNotes(pid);
 
   if (preferredId !== undefined && preferredId !== null) {
     selectedNoteId = Number(preferredId);
@@ -302,7 +364,7 @@ async function renderNotes(preferredId) {
 
   const listHtml = notes.map(n => {
     const isActive = n.id === selected.id;
-    const preview = (n.content || '').trim();
+    const preview = stripHtml(n.content || '').trim();
     return `
       <button class="note-list-item ${isActive ? 'active' : ''}" data-id="${n.id}" title="${escHtml(n.title || '제목 없음')}">
         <div class="note-list-top">
@@ -314,6 +376,8 @@ async function renderNotes(preferredId) {
       </button>
     `;
   }).join('');
+
+  const editorContent = migrateNoteContent(selected.content);
 
   container.innerHTML = `
     <div class="notes-shell">
@@ -333,15 +397,201 @@ async function renderNotes(preferredId) {
             고정
           </label>
         </div>
-        <textarea id="note-editor-content" class="note-editor-content" placeholder="아이디어, 메모, 개발 체크 포인트를 자유롭게 적어주세요.">${escHtml(selected.content || '')}</textarea>
+        <div class="note-toolbar" id="note-toolbar">
+          <button class="tb-btn" data-cmd="heading" data-level="1" title="큰 제목">H1</button>
+          <button class="tb-btn" data-cmd="heading" data-level="2" title="중간 제목">H2</button>
+          <button class="tb-btn" data-cmd="heading" data-level="3" title="작은 제목">H3</button>
+          <span class="tb-sep"></span>
+          <button class="tb-btn" data-cmd="bold" title="굵게"><b>B</b></button>
+          <button class="tb-btn" data-cmd="italic" title="기울기"><i>I</i></button>
+          <button class="tb-btn" data-cmd="underline" title="밑줄"><u>U</u></button>
+          <button class="tb-btn" data-cmd="strike" title="취소선"><s>S</s></button>
+          <span class="tb-sep"></span>
+          <div class="tb-dropdown">
+            <button class="tb-btn" data-cmd="highlight-toggle" title="하이라이트">🖍</button>
+            <div class="tb-palette tb-palette-hl hidden" id="palette-hl">
+              <button class="tb-color-btn" data-hl="#fde68a" style="background:#fde68a" title="노랑"></button>
+              <button class="tb-color-btn" data-hl="#bbf7d0" style="background:#bbf7d0" title="초록"></button>
+              <button class="tb-color-btn" data-hl="#bfdbfe" style="background:#bfdbfe" title="파랑"></button>
+              <button class="tb-color-btn" data-hl="#fecaca" style="background:#fecaca" title="빨강"></button>
+              <button class="tb-color-btn" data-hl="#e9d5ff" style="background:#e9d5ff" title="보라"></button>
+              <button class="tb-color-btn tb-color-none" data-hl="" title="제거">✕</button>
+            </div>
+          </div>
+          <div class="tb-dropdown">
+            <button class="tb-btn" data-cmd="color-toggle" title="글자 색">A<span class="tb-color-indicator" id="tb-color-ind"></span></button>
+            <div class="tb-palette tb-palette-color hidden" id="palette-color">
+              <button class="tb-color-btn" data-color="#f5f2ee" style="background:#f5f2ee" title="기본"></button>
+              <button class="tb-color-btn" data-color="#ef4444" style="background:#ef4444" title="빨강"></button>
+              <button class="tb-color-btn" data-color="#f97316" style="background:#f97316" title="주황"></button>
+              <button class="tb-color-btn" data-color="#eab308" style="background:#eab308" title="노랑"></button>
+              <button class="tb-color-btn" data-color="#22c55e" style="background:#22c55e" title="초록"></button>
+              <button class="tb-color-btn" data-color="#3b82f6" style="background:#3b82f6" title="파랑"></button>
+              <button class="tb-color-btn" data-color="#a855f7" style="background:#a855f7" title="보라"></button>
+            </div>
+          </div>
+          <span class="tb-sep"></span>
+          <button class="tb-btn" data-cmd="blockquote" title="인용">"</button>
+          <button class="tb-btn" data-cmd="code" title="인라인 코드">&lt;/&gt;</button>
+          <button class="tb-btn" data-cmd="codeBlock" title="코드 블록">▤</button>
+          <span class="tb-sep"></span>
+          <button class="tb-btn" data-cmd="bulletList" title="목록">•</button>
+          <button class="tb-btn" data-cmd="orderedList" title="번호 목록">1.</button>
+          <button class="tb-btn" data-cmd="horizontalRule" title="구분선">―</button>
+        </div>
+        <div id="note-editor-tiptap" class="note-editor-tiptap"></div>
         <div class="notes-right-actions">
-          <button class="btn-add-note" id="btn-note-save">저장</button>
+          <button class="btn-add-note btn-note-save-disabled" id="btn-note-save" disabled>저장</button>
           <button class="btn-cancel" id="btn-note-delete">삭제</button>
         </div>
         <div class="note-meta">수정: ${formatDateTime(selected.updated_at)} · 단축키: Ctrl+S 저장</div>
       </section>
     </div>
   `;
+
+  noteOriginal = {
+    title: selected.title || '',
+    content: editorContent,
+    category: selected.category || 'memo',
+    pinned: selected.pinned ? 1 : 0,
+  };
+
+  initTiptapEditor(editorContent);
+  bindNoteToolbar();
+  bindNoteDirtyEvents();
+}
+
+
+function migrateNoteContent(raw) {
+  if (!raw) return '';
+  if (raw.trim().startsWith('<')) return raw;
+  return raw.split('\n').map(line => `<p>${escHtml(line) || '<br>'}</p>`).join('');
+}
+
+function stripHtml(html) {
+  if (!html) return '';
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  return tmp.textContent || '';
+}
+
+function initTiptapEditor(content) {
+  if (tiptapEditor) { tiptapEditor.destroy(); tiptapEditor = null; }
+
+  const el = $('#note-editor-tiptap');
+  if (!el) return;
+
+  tiptapEditor = new Editor({
+    element: el,
+    extensions: [
+      StarterKit,
+      Underline,
+      Highlight.configure({ multicolor: true }),
+      TextStyle,
+      Color,
+    ],
+    content: content || '<p></p>',
+    onUpdate: () => updateNoteDirty(),
+  });
+}
+
+function bindNoteToolbar() {
+  const toolbar = $('#note-toolbar');
+  if (!toolbar) return;
+
+  toolbar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tb-btn');
+    if (!btn || !tiptapEditor) return;
+    const cmd = btn.dataset.cmd;
+    if (!cmd) return;
+
+    const chain = tiptapEditor.chain().focus();
+    switch (cmd) {
+      case 'heading':
+        chain.toggleHeading({ level: Number(btn.dataset.level) }).run();
+        break;
+      case 'bold': chain.toggleBold().run(); break;
+      case 'italic': chain.toggleItalic().run(); break;
+      case 'underline': chain.toggleUnderline().run(); break;
+      case 'strike': chain.toggleStrike().run(); break;
+      case 'blockquote': chain.toggleBlockquote().run(); break;
+      case 'code': chain.toggleCode().run(); break;
+      case 'codeBlock': chain.toggleCodeBlock().run(); break;
+      case 'bulletList': chain.toggleBulletList().run(); break;
+      case 'orderedList': chain.toggleOrderedList().run(); break;
+      case 'horizontalRule': chain.setHorizontalRule().run(); break;
+      case 'highlight-toggle':
+        $('#palette-hl')?.classList.toggle('hidden');
+        $('#palette-color')?.classList.add('hidden');
+        return;
+      case 'color-toggle':
+        $('#palette-color')?.classList.toggle('hidden');
+        $('#palette-hl')?.classList.add('hidden');
+        return;
+    }
+  });
+
+  toolbar.addEventListener('click', (e) => {
+    const hlBtn = e.target.closest('[data-hl]');
+    if (hlBtn && tiptapEditor) {
+      const color = hlBtn.dataset.hl;
+      if (color) tiptapEditor.chain().focus().toggleHighlight({ color }).run();
+      else tiptapEditor.chain().focus().unsetHighlight().run();
+      $('#palette-hl')?.classList.add('hidden');
+      return;
+    }
+
+    const colorBtn = e.target.closest('[data-color]');
+    if (colorBtn && tiptapEditor) {
+      const color = colorBtn.dataset.color;
+      tiptapEditor.chain().focus().setColor(color).run();
+      const ind = $('#tb-color-ind');
+      if (ind) ind.style.background = color;
+      $('#palette-color')?.classList.add('hidden');
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.tb-dropdown')) {
+      $('#palette-hl')?.classList.add('hidden');
+      $('#palette-color')?.classList.add('hidden');
+    }
+  });
+}
+
+function isNoteDirty() {
+  if (!noteOriginal) return false;
+  const titleEl = $('#note-editor-title');
+  const categoryEl = $('#note-editor-category');
+  const pinnedEl = $('#note-editor-pinned');
+  if (!titleEl || !categoryEl || !pinnedEl) return false;
+
+  const currentContent = tiptapEditor ? tiptapEditor.getHTML() : '';
+  return (
+    titleEl.value !== noteOriginal.title ||
+    currentContent !== (noteOriginal.content || '') ||
+    categoryEl.value !== noteOriginal.category ||
+    (pinnedEl.checked ? 1 : 0) !== noteOriginal.pinned
+  );
+}
+
+function updateNoteDirty() {
+  const btn = $('#btn-note-save');
+  if (!btn) return;
+  const dirty = isNoteDirty();
+  btn.disabled = !dirty;
+  btn.classList.toggle('btn-note-save-disabled', !dirty);
+}
+
+function bindNoteDirtyEvents() {
+  const titleEl = $('#note-editor-title');
+  const categoryEl = $('#note-editor-category');
+  const pinnedEl = $('#note-editor-pinned');
+  if (!titleEl || !categoryEl || !pinnedEl) return;
+
+  titleEl.addEventListener('input', updateNoteDirty);
+  categoryEl.addEventListener('change', updateNoteDirty);
+  pinnedEl.addEventListener('change', updateNoteDirty);
 }
 
 async function createNoteAndSelect() {
@@ -350,6 +600,7 @@ async function createNoteAndSelect() {
     content: null,
     category: 'memo',
     pinned: 0,
+    project_id: activeProjectFilter ? activeProjectFilter.id : null,
   });
   selectedNoteId = note.id;
   await renderNotes(selectedNoteId);
@@ -362,10 +613,9 @@ async function createNoteAndSelect() {
 
 function getNoteEditorData() {
   const titleEl = $('#note-editor-title');
-  const contentEl = $('#note-editor-content');
   const categoryEl = $('#note-editor-category');
   const pinnedEl = $('#note-editor-pinned');
-  if (!titleEl || !contentEl || !categoryEl || !pinnedEl) return null;
+  if (!titleEl || !categoryEl || !pinnedEl) return null;
 
   const title = titleEl.value.trim();
   if (!title) {
@@ -373,9 +623,10 @@ function getNoteEditorData() {
     return null;
   }
 
+  const content = tiptapEditor ? tiptapEditor.getHTML() : null;
   return {
     title,
-    content: contentEl.value.trim() || null,
+    content: content || null,
     category: categoryEl.value || 'memo',
     pinned: pinnedEl.checked ? 1 : 0,
   };
@@ -383,6 +634,7 @@ function getNoteEditorData() {
 
 async function saveSelectedNote() {
   if (!selectedNoteId) return;
+  if (!isNoteDirty()) return;
   const fields = getNoteEditorData();
   if (!fields) return;
   await window.orbit.updateNote(selectedNoteId, fields);
@@ -420,7 +672,27 @@ function clearCalendarPlannedCache() {
 }
 
 function todayYmd() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseYmdAsLocalDate(ymd) {
+  if (!ymd || typeof ymd !== 'string') return null;
+  const m = ymd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+function getOverdueDays(targetDate) {
+  const due = parseYmdAsLocalDate(targetDate);
+  if (!due) return 0;
+  const now = parseYmdAsLocalDate(todayYmd());
+  if (!now) return 0;
+  const diff = Math.floor((now.getTime() - due.getTime()) / 86400000);
+  return Math.max(0, diff);
 }
 
 function shiftDateYmd(dateStr, deltaDays) {
@@ -440,9 +712,33 @@ function syncDatePicker() {
 }
 
 function setSidebarActive(view) {
-  $$('.sidebar-item').forEach(el => el.classList.remove('active'));
+  $$('.sidebar-item').forEach(el => {
+    if (!el.classList.contains('project-item')) el.classList.remove('active');
+  });
   const target = document.querySelector(`.sidebar-item[data-view="${view}"]`);
   if (target) target.classList.add('active');
+}
+
+function renderFilterBadge() {
+  let badge = $('#filter-badge');
+  if (!activeProjectFilter) {
+    if (badge) badge.remove();
+    return;
+  }
+  const title = $('#view-title');
+  if (!title) return;
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.id = 'filter-badge';
+    badge.className = 'filter-badge';
+    title.parentNode.insertBefore(badge, title.nextSibling);
+  }
+  badge.innerHTML = `\u25C6 ${escHtml(activeProjectFilter.name)} <button class="filter-badge-x" id="btn-clear-filter">\u2715</button>`;
+}
+
+function clearProjectFilter() {
+  activeProjectFilter = null;
+  loadProjects();
 }
 
 function updateHeaderDateButtons() {
@@ -483,17 +779,42 @@ async function moveHeaderDate(step) {
 
 function bindEvents() {
   document.addEventListener('click', async (e) => {
+    // Filter badge clear
+    if (e.target.closest('#btn-clear-filter')) {
+      clearProjectFilter();
+      clearCalendarPlannedCache();
+      await loadTasks();
+      return;
+    }
+
     // Sidebar nav
     const sideItem = e.target.closest('.sidebar-item[data-view]');
     if (sideItem) {
       const view = sideItem.dataset.view;
-      $$('.sidebar-item').forEach(el => el.classList.remove('active'));
+
+      // Project click = filter toggle (keep current view)
+      if (view === 'project') {
+        const projId = Number(sideItem.dataset.projectId);
+        if (activeProjectFilter && activeProjectFilter.id === projId) {
+          clearProjectFilter();
+        } else {
+          const projects = await window.orbit.getProjects();
+          const proj = projects.find(p => p.id === projId);
+          activeProjectFilter = proj ? { id: proj.id, name: proj.name } : null;
+          loadProjects();
+        }
+        clearCalendarPlannedCache();
+        await loadTasks();
+        return;
+      }
+
+      // Tab click = view change
+      $$('.sidebar-item').forEach(el => {
+        if (!el.classList.contains('project-item')) el.classList.remove('active');
+      });
       sideItem.classList.add('active');
 
-      if (view === 'project') {
-        currentView = 'project';
-        currentProjectId = Number(sideItem.dataset.projectId);
-      } else if (view === 'all') {
+      if (view === 'all') {
         currentView = 'date';
       } else if (view === 'calendar') {
         currentView = 'calendar';
@@ -665,25 +986,23 @@ function bindEvents() {
       else await loadTasks();
     }
 
-    if (e.target.id === 'note-editor-content') {
-      await saveSelectedNote();
-    }
+    // TipTap handles its own focus events
   });
 
   // Subtask estimate change
   document.addEventListener('change', async (e) => {
     if (e.target.id === 'note-editor-title') {
-      await saveSelectedNote();
+      updateNoteDirty();
       return;
     }
 
     if (e.target.id === 'note-editor-category') {
-      await saveSelectedNote();
+      updateNoteDirty();
       return;
     }
 
     if (e.target.id === 'note-editor-pinned') {
-      await saveSelectedNote();
+      updateNoteDirty();
       return;
     }
 
@@ -807,7 +1126,7 @@ function bindEvents() {
 
     ctxMenu.querySelector('.mctx-focus').addEventListener('click', async () => {
       ctxMenu.classList.add('hidden');
-      if (!isRunning) await window.orbit.updateTask(id, { stopwatch_started_at: nowLocal() });
+      if (!isRunning) await startTaskTimer(id);
     });
 
     ctxMenu.querySelector('.mctx-complete').addEventListener('click', async () => {
@@ -945,8 +1264,9 @@ async function getPlannedByDayForMonth(year, month) {
   if (calendarPlannedCacheKey === key) return calendarPlannedCacheData;
 
   const dates = monthDateStrings(year, month);
+  const pid = activeProjectFilter ? activeProjectFilter.id : undefined;
   const results = await Promise.all(dates.map(async (dateStr) => {
-    const dayTasks = await window.orbit.getTasksByDate(dateStr);
+    const dayTasks = await window.orbit.getTasksByDate(dateStr, pid);
     return [dateStr, (dayTasks || []).filter(t => t.status === 'pending')];
   }));
 
@@ -962,8 +1282,9 @@ async function getPlannedByDayForMonth(year, month) {
 
 async function renderCalendar() {
   const container = $('#calendar-view');
+  const pid = activeProjectFilter ? activeProjectFilter.id : undefined;
   const [completed, plannedByDay] = await Promise.all([
-    window.orbit.getCompletedByMonth(calendarYear, calendarMonth),
+    window.orbit.getCompletedByMonth(calendarYear, calendarMonth, pid),
     getPlannedByDayForMonth(calendarYear, calendarMonth),
   ]);
 
@@ -1221,14 +1542,54 @@ function formatSec(s) {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
-  return `${m}:${String(sec).padStart(2,'0')}`;
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
 function nowLocal() {
   const d = new Date();
   const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+let uiAudioCtx = null;
+function playUiSfx(type = 'start') {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    if (!uiAudioCtx) uiAudioCtx = new AudioCtx();
+    if (uiAudioCtx.state === 'suspended') uiAudioCtx.resume();
+
+    const osc = uiAudioCtx.createOscillator();
+    const gain = uiAudioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(uiAudioCtx.destination);
+
+    const now = uiAudioCtx.currentTime;
+    if (type === 'complete') {
+      osc.frequency.setValueAtTime(640, now);
+      osc.frequency.exponentialRampToValueAtTime(920, now + 0.09);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.05, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+      osc.stop(now + 0.15);
+    } else {
+      osc.frequency.setValueAtTime(560, now);
+      osc.frequency.exponentialRampToValueAtTime(760, now + 0.06);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.04, now + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+      osc.stop(now + 0.1);
+    }
+    osc.start(now);
+  } catch (_e) {
+    // ignore audio failures silently
+  }
+}
+
+async function startTaskTimer(id) {
+  await window.orbit.updateTask(id, { stopwatch_started_at: nowLocal() });
+  playUiSfx('start');
 }
 
 async function completeTaskWithStopwatch(id, cardEl) {
@@ -1239,6 +1600,7 @@ async function completeTaskWithStopwatch(id, cardEl) {
   const fields = { status: 'done', stopwatch_elapsed: 0, stopwatch_started_at: null };
   if (actualMin) fields.actual_minutes = actualMin;
   await window.orbit.updateTask(id, fields);
+  playUiSfx('complete');
 }
 
 function bindMainStopwatchCtx(menu, id, sourceEl) {
@@ -1249,7 +1611,7 @@ function bindMainStopwatchCtx(menu, id, sourceEl) {
 
   if (start) start.addEventListener('click', async () => {
     menu.classList.add('hidden');
-    await window.orbit.updateTask(id, { stopwatch_started_at: nowLocal() });
+    await startTaskTimer(id);
   });
   if (pause) pause.addEventListener('click', async () => {
     menu.classList.add('hidden');
@@ -1260,7 +1622,7 @@ function bindMainStopwatchCtx(menu, id, sourceEl) {
   });
   if (resume) resume.addEventListener('click', async () => {
     menu.classList.add('hidden');
-    await window.orbit.updateTask(id, { stopwatch_started_at: nowLocal() });
+    await startTaskTimer(id);
   });
   if (stop) stop.addEventListener('click', async () => {
     menu.classList.add('hidden');
@@ -1275,6 +1637,19 @@ setInterval(() => {
     if (started) el.textContent = formatSec(calcElapsed(elapsed, started));
   });
 }, 1000);
+
+setInterval(() => {
+  const nowKey = todayYmd();
+  if (nowKey === liveTodayKey) return;
+  liveTodayKey = nowKey;
+  clearCalendarPlannedCache();
+
+  if (currentView === 'today') {
+    currentDate = nowKey;
+    syncDatePicker();
+    loadTasks();
+  }
+}, 30000);
 
 // ── Helpers ──
 

@@ -51,7 +51,7 @@ function renderFocusMode(task) {
   const parentLabel = task._parentTitle ? `<div class="focus-parent">${escHtml(task._parentTitle)}</div>` : '';
 
   list.innerHTML = `
-    <div class="focus-view" data-focus-id="${task.id}" data-sw-elapsed="${elapsed}" data-sw-started="${started}">
+    <div class="focus-view" data-focus-id="${task.id}" data-sw-elapsed="${elapsed}" data-sw-started="${started}" data-has-subs="${task.subtasks && task.subtasks.length > 0 ? '1' : ''}" data-is-sub="${task._parentTitle ? '1' : ''}">
       ${parentLabel}
       <div class="focus-title">${escHtml(task.title)}</div>
       ${task.description ? `<div class="focus-desc">${escHtml(task.description)}</div>` : ''}
@@ -158,7 +158,14 @@ function bindEvents() {
     if (focusComplete) {
       const id = Number(focusComplete.dataset.id);
       const view = focusComplete.closest('.focus-view');
+      const hasSubs = view?.dataset?.hasSubs === '1';
+      const isSub = view?.dataset?.isSub === '1';
+      if (hasSubs && !isSub) {
+        const ok = await showConfirmDialog('서브태스크가 포함된 작업입니다.\n완료 목록에 추가하시겠습니까?');
+        if (!ok) return;
+      }
       await completeTaskWithStopwatch(id, view);
+      if (!isSub) showStickerUndo(id);
       focusTaskId = null;
       return;
     }
@@ -412,8 +419,44 @@ function nowLocal() {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+let uiAudioCtx = null;
+function playUiSfx(type = 'start') {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    if (!uiAudioCtx) uiAudioCtx = new AudioCtx();
+    if (uiAudioCtx.state === 'suspended') uiAudioCtx.resume();
+
+    const osc = uiAudioCtx.createOscillator();
+    const gain = uiAudioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(uiAudioCtx.destination);
+
+    const now = uiAudioCtx.currentTime;
+    if (type === 'complete') {
+      osc.frequency.setValueAtTime(640, now);
+      osc.frequency.exponentialRampToValueAtTime(920, now + 0.09);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.05, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+      osc.stop(now + 0.15);
+    } else {
+      osc.frequency.setValueAtTime(560, now);
+      osc.frequency.exponentialRampToValueAtTime(760, now + 0.06);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.04, now + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+      osc.stop(now + 0.1);
+    }
+    osc.start(now);
+  } catch (_e) {
+    // ignore audio failures silently
+  }
+}
+
 async function swStart(id) {
   await window.orbit.updateTask(id, { stopwatch_started_at: nowLocal() });
+  playUiSfx('start');
 }
 
 async function swPause(id, taskRow) {
@@ -435,6 +478,7 @@ async function completeTaskWithStopwatch(id, taskRow) {
   const fields = { status: 'done', stopwatch_elapsed: 0, stopwatch_started_at: null };
   if (actualMin) fields.actual_minutes = actualMin;
   await window.orbit.updateTask(id, fields);
+  playUiSfx('complete');
 }
 
 function bindStopwatchCtx(menu, id, sourceEl) {

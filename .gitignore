@@ -3,6 +3,8 @@ node_modules/
 
 # Build output
 dist/
+*.bundle.js
+*.bundle.js.map
 
 # Database (personal task data)
 *.db

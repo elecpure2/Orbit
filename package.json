@@ -4,10 +4,11 @@
   "description": "AI-powered desktop todo & project planner with sticky note",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --dev",
-    "build": "electron-builder --win",
-    "build:dir": "electron-builder --win --dir"
+    "build:renderer": "node build-renderer.js",
+    "start": "node build-renderer.js && electron .",
+    "dev": "node build-renderer.js && electron . --dev",
+    "build": "node build-renderer.js && electron-builder --win",
+    "build:dir": "node build-renderer.js && electron-builder --win --dir"
   },
   "author": "",
   "license": "MIT",
@@ -20,7 +21,9 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerLanguages": ["ko"],
+      "installerLanguages": [
+        "ko"
+      ],
       "language": "1042"
     },
     "files": [
@@ -34,13 +37,21 @@
     "extraResources": []
   },
   "dependencies": {
+    "@tiptap/core": "^3.20.0",
+    "@tiptap/extension-color": "^3.20.0",
+    "@tiptap/extension-highlight": "^3.20.0",
+    "@tiptap/extension-text-style": "^3.20.0",
+    "@tiptap/extension-underline": "^3.20.0",
+    "@tiptap/starter-kit": "^3.20.0",
     "better-sqlite3": "^12.6.2",
     "cors": "^2.8.6",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "marked": "^17.0.3"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.3",
     "electron": "^40.6.1",
-    "electron-builder": "^26.8.1"
+    "electron-builder": "^26.8.1",
+    "esbuild": "^0.27.3"
   }
 }

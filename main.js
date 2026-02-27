@@ -115,7 +115,7 @@ function registerIPC() {
   ipcMain.handle('create-project', (_e, data) => db.createProject(data));
   ipcMain.handle('delete-project', (_e, id) => db.deleteProject(id));
 
-  ipcMain.handle('get-notes', () => db.getAllNotes());
+  ipcMain.handle('get-notes', (_e, projectId) => db.getAllNotes(projectId));
   ipcMain.handle('create-note', (_e, data) => {
     const note = db.createNote(data);
     notifyStickerRefresh();
@@ -132,11 +132,11 @@ function registerIPC() {
     return { ok: true };
   });
 
-  ipcMain.handle('get-tasks-today', () => db.getTodayTasks());
-  ipcMain.handle('get-tasks-by-date', (_e, date) => db.getTasksByDate(date));
+  ipcMain.handle('get-tasks-today', (_e, projectId) => db.getTodayTasks(projectId));
+  ipcMain.handle('get-tasks-by-date', (_e, date, projectId) => db.getTasksByDate(date, projectId));
   ipcMain.handle('get-tasks-by-project', (_e, projectId) => db.getTasksByProject(projectId));
   ipcMain.handle('get-subtasks', (_e, parentId) => db.getSubtasks(parentId));
-  ipcMain.handle('get-completed-by-month', (_e, year, month) => db.getCompletedTasksByMonth(year, month));
+  ipcMain.handle('get-completed-by-month', (_e, year, month, projectId) => db.getCompletedTasksByMonth(year, month, projectId));
   ipcMain.handle('create-task', (_e, data) => {
     const task = db.createTask(data);
     notifyStickerRefresh();

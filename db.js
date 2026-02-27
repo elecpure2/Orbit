@@ -7,6 +7,14 @@ const LEGACY_DB_PATH = path.join(__dirname, 'orbit.db');
 
 let db;
 
+function localDateYmd() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function safeMoveFile(src, dst) {
   if (!fs.existsSync(src)) return;
   if (fs.existsSync(dst)) return;
@@ -151,15 +159,20 @@ function getDb() {
 }
 
 function migrate() {
-  const cols = db.prepare("PRAGMA table_info(tasks)").all().map(c => c.name);
-  if (cols.length > 0 && !cols.includes('parent_id')) {
+  const taskCols = db.prepare("PRAGMA table_info(tasks)").all().map(c => c.name);
+  if (taskCols.length > 0 && !taskCols.includes('parent_id')) {
     db.exec("ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE");
   }
-  if (cols.length > 0 && !cols.includes('stopwatch_elapsed')) {
+  if (taskCols.length > 0 && !taskCols.includes('stopwatch_elapsed')) {
     db.exec("ALTER TABLE tasks ADD COLUMN stopwatch_elapsed INTEGER DEFAULT 0");
   }
-  if (cols.length > 0 && !cols.includes('stopwatch_started_at')) {
+  if (taskCols.length > 0 && !taskCols.includes('stopwatch_started_at')) {
     db.exec("ALTER TABLE tasks ADD COLUMN stopwatch_started_at TEXT");
+  }
+
+  const noteCols = db.prepare("PRAGMA table_info(notes)").all().map(c => c.name);
+  if (noteCols.length > 0 && !noteCols.includes('project_id')) {
+    db.exec("ALTER TABLE notes ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL");
   }
 }
 
@@ -224,31 +237,46 @@ function deleteProject(id) {
 
 // ── Notes ──
 
-function getAllNotes() {
+function getAllNotes(projectId) {
+  if (projectId) {
+    return getDb().prepare(`
+      SELECT n.*, p.name AS project_name
+      FROM notes n
+      LEFT JOIN projects p ON n.project_id = p.id
+      WHERE n.project_id = ?
+      ORDER BY n.pinned DESC, n.updated_at DESC, n.created_at DESC
+    `).all(projectId);
+  }
   return getDb().prepare(`
-    SELECT *
-    FROM notes
-    ORDER BY pinned DESC, updated_at DESC, created_at DESC
+    SELECT n.*, p.name AS project_name
+    FROM notes n
+    LEFT JOIN projects p ON n.project_id = p.id
+    ORDER BY n.pinned DESC, n.updated_at DESC, n.created_at DESC
   `).all();
 }
 
-function createNote({ title, content, category, pinned }) {
+function createNote({ title, content, category, pinned, project_id }) {
   const info = getDb().prepare(`
-    INSERT INTO notes (title, content, category, pinned)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO notes (title, content, category, pinned, project_id)
+    VALUES (?, ?, ?, ?, ?)
   `).run(
     title,
     content || null,
     category || 'memo',
-    pinned ? 1 : 0
+    pinned ? 1 : 0,
+    project_id || null
   );
 
-  return getDb().prepare('SELECT * FROM notes WHERE id = ?').get(info.lastInsertRowid);
+  return getDb().prepare(`
+    SELECT n.*, p.name AS project_name
+    FROM notes n LEFT JOIN projects p ON n.project_id = p.id
+    WHERE n.id = ?
+  `).get(info.lastInsertRowid);
 }
 
 function updateNote(id, fields) {
   const db = getDb();
-  const allowed = ['title', 'content', 'category', 'pinned'];
+  const allowed = ['title', 'content', 'category', 'pinned', 'project_id'];
   const sets = [];
   const values = [];
 
@@ -273,24 +301,45 @@ function deleteNote(id) {
 
 // ── Tasks ──
 
-function getTasksByDate(date) {
+function getTasksByDate(date, projectId) {
   const db = getDb();
-  const parents = db.prepare(`
+  let sql = `
     SELECT t.*, p.name AS project_name
     FROM tasks t
     LEFT JOIN projects p ON t.project_id = p.id
-    WHERE t.target_date = ? AND t.parent_id IS NULL
+    WHERE t.parent_id IS NULL
+      AND (t.target_date = ? OR (t.target_date < ? AND t.status = 'pending'))
+  `;
+  const params = [date, date];
+  if (projectId) { sql += ' AND t.project_id = ?'; params.push(projectId); }
+  sql += `
     ORDER BY
       CASE t.priority WHEN 'must' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+      t.target_date ASC,
       t.created_at ASC
-  `).all(date);
-
-  return attachSubtasks(parents);
+  `;
+  return attachSubtasks(db.prepare(sql).all(...params));
 }
 
-function getTodayTasks() {
-  const today = new Date().toISOString().slice(0, 10);
-  return getTasksByDate(today);
+function getTodayTasks(projectId) {
+  const today = localDateYmd();
+  let sql = `
+    SELECT t.*, p.name AS project_name
+    FROM tasks t
+    LEFT JOIN projects p ON t.project_id = p.id
+    WHERE t.parent_id IS NULL
+      AND t.status = 'pending'
+      AND (t.target_date IS NULL OR t.target_date <= ?)
+  `;
+  const params = [today];
+  if (projectId) { sql += ' AND t.project_id = ?'; params.push(projectId); }
+  sql += `
+    ORDER BY
+      CASE t.priority WHEN 'must' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+      t.target_date DESC,
+      t.created_at ASC
+  `;
+  return attachSubtasks(getDb().prepare(sql).all(...params));
 }
 
 function getTasksByProject(projectId) {
@@ -334,7 +383,7 @@ function createTask({ parent_id, project_id, project, title, description, estima
     resolvedProjectId = p.id;
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateYmd();
   const resolvedDate = target_date || today;
   const resolvedStatus = status || 'pending';
 
@@ -417,13 +466,13 @@ function deleteTask(id) {
   return db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
 }
 
-function getCompletedTasksByMonth(year, month) {
+function getCompletedTasksByMonth(year, month, projectId) {
   const start = `${year}-${String(month).padStart(2, '0')}-01`;
   const nextMonth = month === 12 ? 1 : month + 1;
   const nextYear = month === 12 ? year + 1 : year;
   const end = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
 
-  return getDb().prepare(`
+  let sql = `
     SELECT t.id, t.parent_id, t.title, t.description, t.completed_at,
            t.estimate_minutes, t.actual_minutes, t.status, t.target_date, t.project_id,
            p.name AS project_name
@@ -431,8 +480,11 @@ function getCompletedTasksByMonth(year, month) {
     LEFT JOIN projects p ON t.project_id = p.id
     WHERE t.status = 'done'
       AND t.completed_at >= ? AND t.completed_at < ?
-    ORDER BY t.completed_at ASC
-  `).all(start, end);
+  `;
+  const params = [start, end];
+  if (projectId) { sql += ' AND t.project_id = ?'; params.push(projectId); }
+  sql += ' ORDER BY t.completed_at ASC';
+  return getDb().prepare(sql).all(...params);
 }
 
 function close() {

@@ -77,8 +77,7 @@ function createServer(onTaskChange) {
     const { date, project_id } = req.query;
     if (project_id) return res.json(db.getTasksByProject(project_id));
     if (date) return res.json(db.getTasksByDate(date));
-    const today = new Date().toISOString().slice(0, 10);
-    res.json(db.getTasksByDate(today));
+    res.json(db.getTodayTasks());
   });
 
   app.post('/tasks', (req, res) => {
